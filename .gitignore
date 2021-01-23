@@ -1,6 +1,9 @@
 # Hide the API key
 twelve_data_api_key
 
+# hide all collected data
+data/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
