@@ -3,30 +3,72 @@ import torch.nn as nn
 import torch
 
 class StockLSTM(nn.Module):
-    def __init__(self, num_classes, input_size, hidden_size, num_layers, seq_length, device):
+    def __init__(self, num_layers, input_size, hidden_size, fanout_size, output_size, dropout_prob, device):
         super(StockLSTM, self).__init__()
-        self.num_classes = num_classes
+
         self.num_layers = num_layers
         self.input_size = input_size
         self.hidden_size = hidden_size
-        self.seq_length = seq_length
+        self.fanout_size = fanout_size
+        self.output_size = output_size
         self.device = device
-        
-        self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers, batch_first=True)
-        self.fc_1 =  nn.Linear(hidden_size, 256)
-        self.fc = nn.Linear(256, num_classes)
 
+        # If we only have one layer, disable dropout since it won't work.
+        if num_layers == 1:
+            dropout_prob = 0
+
+        self.dropout_prob = dropout_prob
+
+        self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers, batch_first=True, dropout=dropout_prob)
+        self.fc_1 =  nn.Linear(hidden_size, fanout_size)
+        self.fc = nn.Linear(fanout_size, output_size)
         self.relu = nn.ReLU()
+
         
     def forward(self,x):
-        h_0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(self.device)
-        c_0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(self.device)
+        batch_size = x.size(0)
+        h_0 = torch.zeros(self.num_layers, batch_size, self.hidden_size).to(self.device)
+        c_0 = torch.zeros(self.num_layers, batch_size, self.hidden_size).to(self.device)
 
         # Propagate input through LSTM
         output, (hn, cn) = self.lstm(x, (h_0, c_0))
-        hn = hn.view(-1, self.hidden_size)
-        out = self.relu(hn)
+        
+        # Prepare LSTM output for fully conncected layer by flattening it.
+        out = output.contiguous().view(-1, self.hidden_size)
+        out = self.relu(out)
         out = self.fc_1(out)
         out = self.relu(out)
         out = self.fc(out)
+        
+        # Reshape the output back wrt batch size
+        out = out.view(batch_size, -1, self.output_size)
+        
+        # Take the last batch of outputs
+        out = out[:, -1]
         return out
+    
+    
+    def save(self, file, train_loss, val_loss, epoch, lr):
+        torch.save({
+            'num_layers'  : self.num_layers,
+            'input_size'  : self.input_size,
+            'hidden_size' : self.hidden_size,
+            'fanout_size' : self.fanout_size,
+            'dropout_prob': self.dropout_prob,
+            'output_size' : self.output_size,
+            'device'      : self.device,
+            'train_loss'  : train_loss,
+            'val_loss'    : val_loss,
+            'epoch'       : epoch,
+            'lr'          : lr,
+            'data'        : self.state_dict()
+        }, file);
+        
+
+    @classmethod
+    def from_checkpoint(cls, file):
+        ckpt = torch.load(file)
+        model = cls(ckpt['num_layers'], ckpt['input_size'], ckpt['hidden_size'], ckpt['fanout_size'], ckpt['output_size'], ckpt['dropout_prob'], ckpt['device'])
+        model.load_state_dict(ckpt['data'])
+        model.to(ckpt['device'])
+        return model
